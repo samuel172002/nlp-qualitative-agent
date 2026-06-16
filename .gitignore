@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Output artifacts
+output/
+*.pdf
+*.png
+*.html
+
+# Streamlit logs
+streamlit_out.txt
+streamlit_err.txt
+
+# Claude settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
