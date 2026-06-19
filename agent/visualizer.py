@@ -118,9 +118,11 @@ class Visualizer:
 
         out_path = os.path.join(output_dir, "knowledge_graph.html")
         try:
-            net.write_html(out_path, notebook=False, open_browser=False)
+            html = net.generate_html(notebook=False)
         except TypeError:
-            net.save_graph(out_path)
+            html = net.generate_html()
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
     # ------------------------------------------------------------------ #
     # Static PNG — categories + themes subgraph only
