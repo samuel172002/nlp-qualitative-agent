@@ -28,14 +28,23 @@ _CO_OCCUR_THRESHOLD = 2
 # Minimum code frequency to count as "focused" / salient
 _MIN_FREQ = 2
 
-# Causal / constraint verb lemmas for relationship type heuristic
+# Verb lemma sets for 7 specific relationship types
 _CAUSAL_VERBS = {"cause", "lead", "result", "produce", "create",
-                 "generate", "trigger", "drive", "enable", "facilitate"}
+                 "generate", "trigger", "drive", "make", "force", "bring"}
+_ENABLE_VERBS = {"enable", "allow", "facilitate", "support", "promote",
+                 "encourage", "help", "permit", "empower", "enhance", "foster"}
 _CONSTRAINT_VERBS = {"limit", "prevent", "block", "constrain", "restrict",
-                     "inhibit", "hinder", "impede", "stop", "reduce"}
+                     "inhibit", "hinder", "impede", "stop", "reduce",
+                     "challenge", "resist", "oppose", "undermine"}
+_INFLUENCE_VERBS = {"affect", "influence", "shape", "impact", "change",
+                    "alter", "determine", "define", "modify", "shift", "transform"}
+_REQUIRE_VERBS = {"need", "require", "depend", "necessitate", "involve",
+                  "demand", "rely", "use", "apply", "draw"}
+_REFLECT_VERBS = {"reflect", "indicate", "represent", "demonstrate", "show",
+                  "express", "reveal", "manifest", "embody", "signify"}
 
 # Hedging words that mark latent (inferential) themes
-_HEDGING = {"suggest", "suggest", "imply", "implication", "may", "might",
+_HEDGING = {"suggest", "imply", "implication", "may", "might",
             "could", "seem", "appear", "indicate", "reflect", "underlying"}
 
 
@@ -228,65 +237,163 @@ class FocusedCoder:
 # ---------------------------------------------------------------------------
 
 class AxialCoder:
-    """Finds causal/relational links between categories via segment co-occurrence."""
+    """
+    Finds causal/relational links between categories via segment co-occurrence.
+    Infers 7 specific relationship types (causes, enables, constrains, influences,
+    requires, reflects, leads_to) using spaCy verb parsing + verb lexicons.
+    Direction is determined by the position of each category's code excerpts
+    in the co-occurring segment — the earlier one is treated as the source.
+    """
+
+    def __init__(self, nlp=None):
+        self._nlp = nlp
 
     def code(self, fc: FirstCycleResult,
              categories: list[Category]) -> list[AxialRelationship]:
-        # Map code label → category name
         code_to_cat: dict[str, str] = {}
         for cat in categories:
             for code_label in cat.codes:
                 code_to_cat[code_label] = cat.name
 
-        # Count co-occurrences
+        # Co-occurrence count + per-pair segment details (for direction + type)
         co_occur: dict[tuple[str, str], int] = defaultdict(int)
+        co_details: dict[tuple[str, str], list[dict]] = defaultdict(list)
+
         for cs in fc.coded_segments:
-            cats_in_seg: set[str] = set()
+            cats_present: dict[str, list] = defaultdict(list)
             for code in cs.codes:
                 cat = code_to_cat.get(code.label)
                 if cat:
-                    cats_in_seg.add(cat)
-            for a, b in combinations(sorted(cats_in_seg), 2):
-                co_occur[(a, b)] += 1
+                    cats_present[cat].append(code)
 
-        # Build relationships above threshold
+            cat_names = sorted(cats_present.keys())
+            for a, b in combinations(cat_names, 2):
+                key = (a, b)
+                co_occur[key] += 1
+                if len(co_details[key]) < 5:
+                    co_details[key].append({
+                        "text": cs.segment.text,
+                        "a_codes": cats_present[a],
+                        "b_codes": cats_present[b],
+                    })
+
         relationships: list[AxialRelationship] = []
-        for (src, tgt), count in co_occur.items():
+        for (cat_a, cat_b), count in co_occur.items():
             if count < _CO_OCCUR_THRESHOLD:
                 continue
-            rel_type = self._infer_relationship_type(src, tgt, fc, code_to_cat)
+
+            src, tgt, rel_type = self._resolve_relationship(
+                cat_a, cat_b, co_details[(cat_a, cat_b)], fc, code_to_cat
+            )
             relationships.append(AxialRelationship(
                 source_category=src,
                 target_category=tgt,
                 relationship_type=rel_type,
-                description=f"Co-occur in {count} segment(s)",
+                description=f"Co-occurs in {count} segment(s)",
                 conditions=[],
                 consequences=[],
             ))
 
-        # Sort by co-occurrence (proxy: description contains highest number)
         relationships.sort(
             key=lambda r: int(re.search(r"\d+", r.description).group()),
             reverse=True,
         )
         return relationships
 
-    def _infer_relationship_type(self, src: str, tgt: str,
-                                  fc: FirstCycleResult,
-                                  code_to_cat: dict[str, str]) -> str:
-        """Heuristic: inspect excerpts of both categories for verb cues."""
-        src_codes = [c for lbl, codes in fc.all_codes.items()
-                     for c in codes if code_to_cat.get(lbl) == src]
-        tgt_codes = [c for lbl, codes in fc.all_codes.items()
-                     for c in codes if code_to_cat.get(lbl) == tgt]
-        all_excerpts = " ".join(
-            c.excerpt.lower() for c in src_codes + tgt_codes if c.excerpt
-        )
-        words = set(re.findall(r"\b\w+\b", all_excerpts))
-        if words & _CAUSAL_VERBS:
-            return "causes"
-        if words & _CONSTRAINT_VERBS:
-            return "constrains"
+    # ------------------------------------------------------------------ #
+    # Direction + type resolution
+    # ------------------------------------------------------------------ #
+
+    def _resolve_relationship(
+        self,
+        cat_a: str,
+        cat_b: str,
+        details: list[dict],
+        fc: FirstCycleResult,
+        code_to_cat: dict[str, str],
+    ) -> tuple[str, str, str]:
+        """Return (source_category, target_category, relation_type)."""
+        a_excerpts = [
+            c.excerpt.lower()
+            for lbl, codes_list in fc.all_codes.items()
+            for c in codes_list
+            if code_to_cat.get(lbl) == cat_a and c.excerpt
+        ]
+        b_excerpts = [
+            c.excerpt.lower()
+            for lbl, codes_list in fc.all_codes.items()
+            for c in codes_list
+            if code_to_cat.get(lbl) == cat_b and c.excerpt
+        ]
+
+        # 1. Relationship type — prefer spaCy ROOT verb detection
+        rel_type = self._infer_type_via_spacy(a_excerpts + b_excerpts)
+        if rel_type is None:
+            rel_type = self._infer_type_via_lexicon(a_excerpts + b_excerpts)
+
+        # 2. Direction — whichever category's excerpts appear earlier in the
+        #    shared segment text is treated as the source (subject/cause)
+        a_first_count = 0
+        b_first_count = 0
+        for d in details:
+            seg_lower = d["text"].lower()
+            a_pos = self._first_excerpt_pos(d["a_codes"], seg_lower)
+            b_pos = self._first_excerpt_pos(d["b_codes"], seg_lower)
+            if a_pos < b_pos:
+                a_first_count += 1
+            elif b_pos < a_pos:
+                b_first_count += 1
+
+        if b_first_count > a_first_count:
+            return (cat_b, cat_a, rel_type)
+        return (cat_a, cat_b, rel_type)
+
+    def _first_excerpt_pos(self, codes: list, seg_text: str) -> float:
+        positions = []
+        for code in codes:
+            if code.excerpt:
+                snippet = code.excerpt[:40].lower()
+                pos = seg_text.find(snippet)
+                if pos >= 0:
+                    positions.append(pos)
+        return min(positions) if positions else float("inf")
+
+    def _infer_type_via_spacy(self, excerpts: list[str]) -> str | None:
+        """Find the most frequent relationship-signalling ROOT verb via spaCy."""
+        if not self._nlp or not excerpts:
+            return None
+
+        combined = " ".join(excerpts[:20])[:1200]
+        doc = self._nlp(combined)
+        rel_counts: dict[str, int] = defaultdict(int)
+
+        for token in doc:
+            if token.pos_ != "VERB" or token.is_stop:
+                continue
+            lemma = token.lemma_.lower()
+            for vset, rel in (
+                (_CAUSAL_VERBS,     "causes"),
+                (_ENABLE_VERBS,     "enables"),
+                (_CONSTRAINT_VERBS, "constrains"),
+                (_INFLUENCE_VERBS,  "influences"),
+                (_REQUIRE_VERBS,    "requires"),
+                (_REFLECT_VERBS,    "reflects"),
+            ):
+                if lemma in vset:
+                    rel_counts[rel] += 1
+                    break
+
+        return max(rel_counts, key=rel_counts.get) if rel_counts else None
+
+    def _infer_type_via_lexicon(self, excerpts: list[str]) -> str:
+        """Verb-lexicon fallback when spaCy is unavailable."""
+        words = set(re.findall(r"\b\w+\b", " ".join(excerpts).lower()))
+        if words & _CAUSAL_VERBS:      return "causes"
+        if words & _ENABLE_VERBS:      return "enables"
+        if words & _CONSTRAINT_VERBS:  return "constrains"
+        if words & _INFLUENCE_VERBS:   return "influences"
+        if words & _REQUIRE_VERBS:     return "requires"
+        if words & _REFLECT_VERBS:     return "reflects"
         return "leads_to"
 
 

@@ -42,7 +42,7 @@ class SecondCycleEngine:
 
         # Stage 3c: Axial coding — find relationships between categories
         _step(3, "Axial coding…")
-        axial_coder = AxialCoder()
+        axial_coder = AxialCoder(nlp=self._nlp)
         axial_relationships = axial_coder.code(fc, categories)
 
         # Stage 3d: Theoretical coding — core category + themes

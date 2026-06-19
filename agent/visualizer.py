@@ -29,6 +29,21 @@ NODE_SIZES = {
     "core_category": 60,
 }
 
+# Edge colour + width by relationship type
+_EDGE_STYLES: dict[str, dict] = {
+    "causes":          {"color": "#ff6b6b", "width": 3, "label": "causes"},
+    "enables":         {"color": "#51cf66", "width": 3, "label": "enables"},
+    "constrains":      {"color": "#ff922b", "width": 3, "label": "constrains"},
+    "influences":      {"color": "#74c0fc", "width": 3, "label": "influences"},
+    "requires":        {"color": "#da77f2", "width": 3, "label": "requires"},
+    "reflects":        {"color": "#ffd43b", "width": 3, "label": "reflects"},
+    "leads_to":        {"color": "#adb5bd", "width": 2, "label": "leads to"},
+    "has_code":        {"color": "#3a3a5a", "width": 1, "label": ""},
+    "belongs_to":      {"color": "#3a3a5a", "width": 1, "label": "belongs to"},
+    "supports_theme":  {"color": "#cc5de8", "width": 2, "label": "supports"},
+    "relates_to_core": {"color": "#ffd700", "width": 2, "label": "relates to"},
+}
+
 
 class Visualizer:
     def export(self, graph: nx.DiGraph, output_dir: str,
@@ -41,18 +56,39 @@ class Visualizer:
             self._export_cooccurrence(fc, sc, output_dir)
 
     # ------------------------------------------------------------------ #
-    # Interactive HTML via PyVis
+    # Interactive HTML via PyVis — fully self-contained (no local assets)
     # ------------------------------------------------------------------ #
     def _export_pyvis(self, graph: nx.DiGraph, output_dir: str) -> None:
-        net = Network(height="750px", width="100%", directed=True,
-                      bgcolor="#1a1a2e", font_color="#ffffff")
+        # cdn_resources="in_line" embeds all JS/CSS into the HTML so the file
+        # works on any device without needing the local lib/ folder.
+        try:
+            net = Network(height="750px", width="100%", directed=True,
+                          bgcolor="#1a1a2e", font_color="#ffffff",
+                          cdn_resources="in_line")
+        except TypeError:
+            # Older pyvis (<0.3.1) doesn't support cdn_resources
+            net = Network(height="750px", width="100%", directed=True,
+                          bgcolor="#1a1a2e", font_color="#ffffff")
+
         net.set_options("""
         {
           "physics": {
-            "barnesHut": { "gravitationalConstant": -8000, "springLength": 200 },
-            "stabilization": { "iterations": 100 }
+            "barnesHut": {
+              "gravitationalConstant": -8000,
+              "springLength": 200,
+              "damping": 0.15
+            },
+            "stabilization": { "iterations": 150 }
           },
-          "edges": { "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } } }
+          "edges": {
+            "arrows": { "to": { "enabled": true, "scaleFactor": 0.6 } },
+            "smooth": { "type": "dynamic" }
+          },
+          "interaction": {
+            "hover": true,
+            "tooltipDelay": 100,
+            "navigationButtons": true
+          }
         }
         """)
 
@@ -69,12 +105,22 @@ class Visualizer:
 
         for src, dst, attrs in graph.edges(data=True):
             etype = attrs.get("edge_type", "")
-            net.add_edge(str(src), str(dst), title=etype, label=etype,
-                         font={"size": 9, "color": "#aaaaaa"},
-                         color={"color": "#555577", "highlight": "#ffffff"})
+            style = _EDGE_STYLES.get(etype, {"color": "#555577", "width": 1, "label": etype})
+            display_label = style["label"]
+            net.add_edge(
+                str(src), str(dst),
+                title=f"<b>{display_label or etype}</b><br>{attrs.get('description', '')}",
+                label=display_label,
+                width=style["width"],
+                font={"size": 9, "color": style["color"]},
+                color={"color": style["color"], "highlight": "#ffffff"},
+            )
 
         out_path = os.path.join(output_dir, "knowledge_graph.html")
-        net.save_graph(out_path)
+        try:
+            net.write_html(out_path, notebook=False, open_browser=False)
+        except TypeError:
+            net.save_graph(out_path)
 
     # ------------------------------------------------------------------ #
     # Static PNG — categories + themes subgraph only
